@@ -7,7 +7,7 @@ from librosa.filters import mel
 
 from src import E2E0
 from src.constants import *
-
+import json
 import torch
 
 
@@ -91,7 +91,9 @@ class RMVPE_ONNX(nn.Module):
         mel = self.mel_extractor(waveform, center=True)
         hidden = self.mel2hidden(mel)
         f0, uv = self.decode(hidden, threshold=threshold)
-        return f0, uv
+        s = torch.LongTensor([179]).to(f0.device)
+        f0_s = f0.mul(s)
+        return f0, uv, f0_s
 
 
 def parse_args(args=None, namespace=None):
@@ -172,7 +174,7 @@ def export():
     rmvpe = RMVPE_ONNX(hop_length=cmd.hop_length)
     rmvpe.model.load_state_dict(torch.load(model_path)['model'])
     rmvpe.eval().to(device)
-    waveform = torch.randn(1, 114514, dtype=torch.float32, device=device).clip(min=-1., max=1.)
+    waveform = torch.randn(1, 1024*4, dtype=torch.float32, device=device).clip(min=-1., max=1.)
     threshold = torch.tensor(0.03, dtype=torch.float32, device=device)
     print('start exporting ...')
     with torch.no_grad():
@@ -189,19 +191,23 @@ def export():
             ],
             output_names=[
                 'f0',
-                'uv'
+                'uv',
+                'f0_s'
             ],
-            dynamic_axes={
-                'waveform': {
-                    1: 'n_samples'
-                },
-                'f0': {
-                    1: 'n_frames'
-                },
-                'uv': {
-                    1: 'n_frames'
-                }
-            },
+            # dynamic_axes={
+            #     'waveform': {
+            #         1: 'n_samples'
+            #     },
+            #     'f0': {
+            #         1: 'n_frames'
+            #     },
+            #     'f0_s': {
+            #         1: 'n_frames'
+            #     },
+            #     'uv': {
+            #         1: 'n_frames'
+            #     }
+            # },
             opset_version=17
         )
     if cmd.optimize:
@@ -217,6 +223,12 @@ def export():
             model,
             include_subgraph=True
         )
+        meta = model.metadata_props.add()
+        meta.key = "metadata"
+        meta.value = json.dumps({
+            "note": "converted from https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt"
+        })
+
         assert check, 'Simplified ONNX model could not be validated'
         onnx.save(model, output_path)
 
